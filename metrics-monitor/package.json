@@ -1,0 +1,16 @@
+{
+  "name": "metrics-monitor",
+  "version": "1.0.0",
+  "description": "Monitor de métricas para el microservicio de procesamiento de archivos.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/monitor.js"
+  },
+  "keywords": [],
+  "author": "Rodrigo Romero",
+  "license": "ISC",
+  "packageManager": "pnpm@10.11.1",
+  "dependencies": {
+    "axios": "^1.10.0"
+  }
+}
