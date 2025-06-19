@@ -1,0 +1,11 @@
+meta {
+  name: Upload Status
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{BASE_URL}}/api/v1/clients/status/{{REQUEST_ID}}
+  body: none
+  auth: inherit
+}

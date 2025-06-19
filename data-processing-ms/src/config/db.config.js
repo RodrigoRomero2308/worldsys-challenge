@@ -17,6 +17,4 @@ const dbConfig = {
   },
 };
 
-console.log(dbConfig);
-
 module.exports = dbConfig;

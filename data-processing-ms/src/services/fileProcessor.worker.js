@@ -12,10 +12,18 @@ logger.info(`[Worker][${requestId}] Iniciado y listo para procesar stream.`);
 const EXPECTED_COLUMNS = 10;
 const BATCH_SIZE = 1000;
 
-let lineNumber = 0;
-let processedLinesCount = 0;
-let errorLinesCount = 0;
+let totalLinesStreamed = 0; // Renombrado desde lineNumber para claridad
+let validLinesCount = 0;    // Renombrado desde processedLinesCount
+let errorLinesCount = 0;    // Mantenido
 let batch = [];
+
+// Contadores para la BD
+let rowsSentToDb = 0;
+let rowsSuccessfullyInserted = 0;
+let batchesSentToDb = 0; // Ya existía como batchesSentCount, ahora es parte del objeto 'database'
+let batchesFailedInDb = 0;
+let lastDbError = null;
+
 let isDbWriting = false;
 let streamFinished = false;
 let batchQueue = [];
@@ -52,12 +60,79 @@ async function insertBatch(records) {
   try {
     const request = pool.request();
     const result = await request.bulk(table);
-    logger.info(`[Worker][${requestId}] Insertados ${result.rowsAffected} registros.`);
-    parentPort.postMessage({ type: 'DB_INSERT_SUCCESS', data: { inserted: result.rowsAffected } });
+    
+    batchesSentToDb++;
+    rowsSuccessfullyInserted += result.rowsAffected;
+    rowsSentToDb += records.length; // Asumimos que todos los 'records' se intentaron enviar
+
+    logger.info(`[Worker][${requestId}] Lote de ${records.length} registros insertado. Filas afectadas: ${result.rowsAffected}. Total lotes BD: ${batchesSentToDb}`);
+    
+    parentPort.postMessage({ 
+      type: 'DB_INSERT_SUCCESS', 
+      data: { 
+        insertedInBatch: result.rowsAffected, 
+        batchSize: records.length,
+        totalRowsSuccessfullyInserted: rowsSuccessfullyInserted,
+        totalBatchesSentToDb: batchesSentToDb
+      } 
+    });
+    
+    parentPort.postMessage({
+      type: 'PROGRESS_UPDATE',
+      data: {
+        processing: {
+          totalLinesStreamed,
+          validLinesCount,
+          errorLinesCount,
+        },
+        database: {
+          rowsSentToDb,
+          rowsSuccessfullyInserted,
+          batchesSentToDb,
+          batchesFailedInDb,
+          lastDbError,
+          batchesInQueue: batchQueue.length,
+        }
+      }
+    });
+
     return result.rowsAffected;
   } catch (err) {
-    logger.error(`[Worker][${requestId}] Error durante la inserción masiva:`, { error: err.message });
-    parentPort.postMessage({ type: 'DB_INSERT_ERROR', data: { error: err.message, failed_batch_size: records.length } });
+    logger.error(`[Worker][${requestId}] Error durante la inserción masiva del lote de ${records.length} registros:`, { message: err.message, code: err.code });
+    batchesFailedInDb++;
+    lastDbError = err.message;
+    rowsSentToDb += records.length; // Se intentaron enviar estas filas
+
+    parentPort.postMessage({ 
+      type: 'DB_INSERT_ERROR', 
+      data: { 
+        error: err.message, 
+        code: err.code, 
+        failedBatchSize: records.length,
+        totalBatchesFailedInDb: batchesFailedInDb,
+        lastDbError 
+      } 
+    });
+
+    // Re-enviar progreso con el error actualizado
+    parentPort.postMessage({
+      type: 'PROGRESS_UPDATE',
+      data: {
+        processing: {
+          totalLinesStreamed,
+          validLinesCount,
+          errorLinesCount,
+        },
+        database: {
+          rowsSentToDb,
+          rowsSuccessfullyInserted,
+          batchesSentToDb,
+          batchesFailedInDb,
+          lastDbError,
+          batchesInQueue: batchQueue.length,
+        }
+      }
+    });
     // Sin reintentos
     return 0;
   }
@@ -83,9 +158,22 @@ function finishProcessing() {
   logger.info(`[Worker][${requestId}] Fin del procesamiento.`);
   if (pool) pool.close();
   parentPort.postMessage({
-    status: 'completed',
-    summary: { totalLinesRead: lineNumber, processedLines: processedLinesCount, errorLines: errorLinesCount },
-  });
+      status: 'completed',
+      summary: {
+        processing: {
+          totalLinesStreamed,
+          validLinesCount,
+          errorLinesCount,
+        },
+        database: {
+          rowsSentToDb,
+          rowsSuccessfullyInserted,
+          batchesSentToDb,
+          batchesFailedInDb,
+          lastDbError,
+        }
+      }
+    });
   parentPort.close();
 }
 
@@ -138,7 +226,7 @@ const rl = readline.createInterface({
 });
 
 rl.on('line', (line) => {
-  lineNumber++;
+  totalLinesStreamed++;
   if (line.trim() === '') {
     logger.debug(`[Worker][${requestId}] Línea ${lineNumber} vacía, omitiendo.`);
     return;
@@ -147,7 +235,7 @@ rl.on('line', (line) => {
     const recordArray = parseCsvLikeLine(line);
     const clientRecord = validateAndMapRecord(recordArray);
     batch.push(clientRecord);
-    processedLinesCount++;
+    validLinesCount++;
 
     if (batch.length >= BATCH_SIZE) {
       logger.debug(`[Worker][${requestId}] Lote de ${batch.length} registros listo, añadiendo a la cola.`);
@@ -157,17 +245,17 @@ rl.on('line', (line) => {
     }
   } catch (error) {
     errorLinesCount++;
-    logger.error(`[Worker][${requestId}] Error al procesar línea ${lineNumber}:`, { error: error.message });
+    logger.error(`[Worker][${requestId}] Error al procesar línea ${totalLinesStreamed}:`, { error: error.message });
     parentPort.postMessage({
       type: 'LINE_ERROR',
-      data: { lineNumber, lineContent: line.substring(0, 100), error: error.message },
+      data: { lineNumber: totalLinesStreamed, lineContent: line.substring(0, 100), error: error.message },
     });
   }
 });
 
 rl.on('close', () => {
   streamFinished = true;
-  logger.info(`[Worker][${requestId}] Fin del stream de entrada (readline closed). Líneas leídas: ${lineNumber}`);
+  logger.info(`[Worker][${requestId}] Fin del stream de entrada (readline closed). Líneas leídas: ${totalLinesStreamed}`);
   if (batch.length > 0) {
     logger.debug(`[Worker][${requestId}] Añadiendo lote final de ${batch.length} registros a la cola.`);
     batchQueue.push(batch);

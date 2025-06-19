@@ -11,7 +11,13 @@ post {
 }
 
 body:multipart-form {
-  file: @file(C:\Proyectos\artekium\challenge-worldsys\data-generator\clientes1M.dat)
+  file: @file(C:\Proyectos\artekium\challenge-worldsys\data-generator\clientes10000.dat)
+}
+
+script:post-response {
+  const resBody = await res.getBody();
+  
+  bru.setEnvVar("REQUEST_ID", resBody.requestId)
 }
 
 docs {
