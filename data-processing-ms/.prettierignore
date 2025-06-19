@@ -1,0 +1,10 @@
+# Ignorar artefactos de build y dependencias
+node_modules
+dist
+coverage
+*.log
+
+# Ignorar archivos de lock del gestor de paquetes
+package-lock.json
+pnpm-lock.yaml
+yarn.lock

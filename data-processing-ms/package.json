@@ -1,0 +1,29 @@
+{
+  "name": "data-processing-ms",
+  "version": "1.0.0",
+  "description": "Microservicio para procesar archivos DAT de clientes e insertarlos en SQL Server.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write ."
+  },
+  "keywords": [],
+  "author": "Rodrigo Romero",
+  "license": "ISC",
+  "packageManager": "pnpm@10.11.1",
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "mssql": "^11.0.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.29.0",
+    "nodemon": "^3.1.10",
+    "prettier": "^3.5.3"
+  }
+}

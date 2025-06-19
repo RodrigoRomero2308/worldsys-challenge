@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  sqlserver:
+    # image: mcr.microsoft.com/mssql/server:2019-latest # for AMD64
+    image: mcr.microsoft.com/azure-sql-edge:latest # for ARM64
+    container_name: mssql_server_dev
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "admin123"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+
+volumes:
+  sqlserver_data:
