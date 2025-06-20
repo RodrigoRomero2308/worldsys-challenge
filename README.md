@@ -24,8 +24,6 @@ El microservicio expone una API REST para la carga de archivos, la consulta del 
   - Endpoint de estado `/api/v1/clients/status/:requestId` para seguir el progreso de una carga en tiempo real.
 - **Contenerización y Orquestación**: Incluye un `Dockerfile` multi-etapa optimizado para producción y manifiestos de Kubernetes (`Deployment`, `Service`, `ConfigMap`, `Secret`) para un despliegue sencillo.
 
----
-
 ## 2. Decisiones de Arquitectura
 
 - **Node.js y Express**: Se eligió Node.js por su modelo de I/O no bloqueante, ideal para aplicaciones de red y streaming. Express proporciona un framework minimalista y robusto para la API.
@@ -34,8 +32,6 @@ El microservicio expone una API REST para la carga de archivos, la consulta del 
 - **Inserciones Masivas (Bulk Inserts)**: Para maximizar el rendimiento de la base de datos, los registros validados se agrupan en lotes y se envían a SQL Server mediante una única operación de `bulk insert`, reduciendo drásticamente la sobrecarga de la red y las transacciones.
 - **Docker y Kubernetes (K8s)**: La contenerización asegura un entorno de ejecución consistente. Kubernetes fue elegido para la orquestación por su robustez, escalabilidad y estándar en la industria. Se utiliza `kind` para el desarrollo local en un entorno similar a producción.
 - **Logging Centralizado con `Winston`**: Se utiliza Winston para un logging estructurado y configurable, con un `requestId` para correlacionar todos los logs pertenecientes a una misma petición.
-
----
 
 ## 3. Configuración del Entorno
 
@@ -80,8 +76,6 @@ docker run --cap-add SYS_PTRACE -e 'ACCEPT_EULA=1' -e 'MSSQL_SA_PASSWORD=YourStr
 mcr.microsoft.com/azure-sql-edge
 ```
 
----
-
 ## 4. Cómo Ejecutar el Servicio
 
 ### A. Localmente (para desarrollo rápido)
@@ -125,8 +119,6 @@ El `docker-compose.yml` en la raíz del proyecto levanta el servicio y la base d
       kubectl apply -f ./data-processing-ms/k8s/
       ```
 
----
-
 ## 5. Uso de la API y Herramientas
 
 ### Endpoints
@@ -164,8 +156,6 @@ El proyecto `metrics-monitor` contiene un script para monitorear una carga espec
 4.  Ejecuta el script: `pnpm start`.
 5.  Ingresa el `requestId` devuelto por el endpoint de subida.
 
----
-
 ## 6. Estrategia de Escalabilidad
 
 Se ha propuesto una estrategia de escalabilidad con dos enfoques:
@@ -173,3 +163,78 @@ Se ha propuesto una estrategia de escalabilidad con dos enfoques:
 1.  **Escalado Horizontal (Múltiples Archivos)**: Utilizar un Horizontal Pod Autoscaler (HPA) en Kubernetes para escalar el número de Pods basado en el uso de CPU. Esto permite procesar múltiples archivos de forma concurrente, donde cada Pod se encarga de un archivo.
 
 2.  **Escalado por Sharding (Archivos Gigantes)**: Para archivos individuales que superan los 20-30 GB, se propone un modelo de *sharding*. Un servicio "coordinador" dividiría el archivo en trozos lógicos (rangos de bytes) y los encolaría en una cola de mensajes (como RabbitMQ o Kafka). Múltiples Pods "trabajadores" consumirían mensajes de la cola, procesando cada uno un trozo del archivo en paralelo. Esto permite paralelizar el procesamiento de un único archivo masivo.
+
+## 7. Pruebas y Validación
+
+Sigue estos pasos para realizar una prueba completa del sistema de principio a fin.
+
+### Paso 1: Generar Datos de Prueba
+
+1.  Abre una terminal y navega al directorio del generador de datos:
+    ```bash
+    cd data-generator
+    ```
+2.  Ejecuta el script para crear un archivo `clientes.dat` con 10,000 líneas y una tasa de error del 5%:
+    ```bash
+    node generate-data.js --lines 10000 --error-rate 0.05
+    ```
+
+Se creará un archivo `clientes.dat` en el directorio `data-generator` con aproximadamente 9,500 líneas válidas y 500 líneas con errores de formato.
+
+### Paso 2: Iniciar el Entorno
+
+1.  Desde la raíz del proyecto, levanta el microservicio y la base de datos usando Docker Compose:
+    ```bash
+    docker-compose up --build
+    ```
+
+Los contenedores del servicio (`data-processing-ms`) y la base de datos (`sql-server`) se inician. Deberías ver los logs del servicio indicando que está escuchando en el puerto 3000.
+
+### Paso 3: Subir el Archivo y Obtener el Request ID
+
+1.  Abre una segunda terminal.
+2.  Usa `curl` para subir el archivo generado. Este comando asume que estás en la raíz del proyecto:
+    ```bash
+    # El puerto es 3000 porque docker-compose expone ese puerto
+    curl -X POST -F "file=@./data-generator/clientes.dat" http://localhost:3000/api/v1/clients/upload
+    ```
+
+Recibirás una respuesta JSON con el `requestId` del proceso de carga. Cópialo.
+```json
+{
+  "message": "El archivo se está procesando. Usa el siguiente ID para rastrear el progreso.",
+  "requestId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+}
+```
+
+### Paso 4: Monitorear el Proceso
+
+1.  Abre una tercera terminal y navega al directorio del monitor:
+    ```bash
+    cd metrics-monitor
+    ```
+2.  Asegúrate de que el archivo `.env` apunte a la URL correcta (`API_BASE_URL=http://localhost:3000`).
+3.  Inicia el script de monitoreo:
+    ```bash
+    pnpm start
+    ```
+4.  Cuando se te solicite, pega el `requestId` que copiaste en el paso anterior.
+
+Al finalizar, imprimirá el estado final (`completed`), generará un archivo `report.html` y se detendrá.
+
+### Paso 5: Verificar los Resultados
+
+1.  **Revisar el Reporte**: Abre el archivo `metrics-monitor/report.html` en un navegador. Verifica que las estadísticas finales coincidan con lo esperado (aprox. 9,500 líneas válidas y 500 con error).
+
+2.  **Consultar la Base de Datos**: Conéctate a la base de datos SQL Server (puedes usar Azure Data Studio o `sqlcmd` dentro del contenedor de Docker) y verifica el número de filas insertadas.
+    ```bash
+    # Comando para entrar a sqlcmd en el contenedor (reemplaza 'sql-server' si tu contenedor se llama diferente)
+    docker exec -it sql-server /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'YourStrong@Password'
+    ```
+    Una vez dentro de `sqlcmd`:
+    ```sql
+    USE ChallengeDB;
+    GO
+    SELECT COUNT(*) FROM Clientes;
+    GO
+    ```
