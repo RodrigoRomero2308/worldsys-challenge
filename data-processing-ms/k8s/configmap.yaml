@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-processing-ms-config
+  namespace: default
+data:
+  PORT: "3000"
+  LOG_LEVEL: "info"
+  DB_BATCH_SIZE: "1000"
+  DB_MAX_QUEUE_SIZE: "10"
