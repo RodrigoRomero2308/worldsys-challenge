@@ -16,6 +16,7 @@ El microservicio expone una API REST para la carga de archivos, la consulta del 
 
 - **Procesamiento de Archivos Grandes**: Capaz de manejar archivos de varios gigabytes gracias al procesamiento en streaming (con `busboy`) y la lectura línea por línea.
 - **Procesamiento Asíncrono**: Utiliza `worker_threads` de Node.js para procesar los archivos en segundo plano, manteniendo la API principal receptiva en todo momento.
+- **Gestión de Memoria Eficiente (Back-Pressure)**: Implementa un mecanismo de contrapresión (back-pressure) que pausa y reanuda dinámicamente el procesamiento de datos. Esto sincroniza la velocidad de lectura del archivo con la capacidad de escritura de la base de datos, garantizando un uso de memoria (RSS) bajo y estable incluso con límites de recursos estrictos.
 - **Base de Datos SQL Server**: Inserta los datos validados en una base de datos SQL Server utilizando inserciones masivas (`bulk insert`) para un rendimiento óptimo.
 - **Tolerancia a Fallos**: Identifica y cuenta las líneas corruptas o con formato incorrecto en el archivo de datos sin detener el proceso.
 - **Monitorización y Observabilidad**:
@@ -68,12 +69,20 @@ DB_MAX_QUEUE_SIZE=5 # Número de lotes que el worker puede encolar antes de paus
 
 ### Base de Datos
 
-El servicio está configurado para conectarse a SQL Server. Para desarrollo en un entorno ARM64 (como un Mac M1/M2/M3 o el servidor Oracle Linux), se recomienda usar la imagen de Azure SQL Edge:
+El servicio está configurado para conectarse a SQL Server. Para desarrollo en un entorno ARM64, se recomienda usar la imagen de Azure SQL Edge:
 
 ```bash
 docker run --cap-add SYS_PTRACE -e 'ACCEPT_EULA=1' -e 'MSSQL_SA_PASSWORD=YourStrong@Password' \
 -p 1433:1433 --name azuresqledge -d \
 mcr.microsoft.com/azure-sql-edge
+```
+
+Para un entorno x86_64, se recomienda usar la imagen de SQL Server:
+
+```bash
+docker run -e 'ACCEPT_EULA=Y' -e 'SA_PASSWORD=YourStrong@Password' \
+-p 1433:1433 --name sqlserver -d \
+mcr.microsoft.com/mssql/server:2019-latest
 ```
 
 ## 4. Cómo Ejecutar el Servicio
@@ -85,13 +94,7 @@ mcr.microsoft.com/azure-sql-edge
 3.  **Configurar `.env`**: Asegúrate de que tu archivo `.env` esté configurado correctamente.
 4.  **Iniciar el servicio**: `pnpm run dev` (usa `nodemon` para recarga en caliente).
 
-### B. Con Docker Compose
-
-El `docker-compose.yml` en la raíz del proyecto levanta el servicio y la base de datos de SQL Server.
-
-1.  **Construir y levantar los contenedores**: `docker-compose up --build`
-
-### C. En Kubernetes (con `kind`)
+### B. En Kubernetes (con `kind`)
 
 1.  **Crear el clúster `kind`**: Si es la primera vez, crea el clúster con el mapeo de puertos necesario.
     ```bash

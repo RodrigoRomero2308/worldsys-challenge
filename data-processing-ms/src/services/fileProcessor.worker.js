@@ -149,9 +149,10 @@ async function processBatchQueue() {
   logger.debug(`[Worker][${requestId}] Procesando lote de ${currentBatch.length} registros. Cola restante: ${batchQueue.length}`);
   await insertBatch(currentBatch);
 
-  // Si la cola estaba llena y ahora tiene espacio, avisamos para reanudar el stream
+  // Si la cola estaba llena y ahora tiene espacio, reanudamos readline y el stream
   if (wasQueueFull && batchQueue.length < DB_MAX_QUEUE_SIZE) {
-    logger.info(`[Worker][${requestId}] Cola de lotes con espacio (${batchQueue.length}). Reanudando stream.`);
+    logger.info(`[Worker][${requestId}] Cola de lotes con espacio (${batchQueue.length}). Reanudando readline y stream.`);
+    rl.resume();
     parentPort.postMessage({ type: 'RESUME_STREAM' });
   }
 
@@ -249,13 +250,14 @@ rl.on('line', (line) => {
 
     if (batch.length >= BATCH_SIZE) {
       logger.debug(`[Worker][${requestId}] Lote de ${batch.length} registros listo, añadiendo a la cola.`);
-      batchQueue.push(batch);
+      batchQueue.push([...batch]); // Corregido: crear una copia del lote
       batch = [];
       process.nextTick(processBatchQueue);
 
-      // Si la cola de lotes está llena, pausar el stream de entrada
+      // Si la cola de lotes está llena, pausar readline y el stream de entrada
       if (batchQueue.length >= DB_MAX_QUEUE_SIZE) {
-        logger.warn(`[Worker][${requestId}] Cola de lotes llena (${batchQueue.length}). Pausando stream de entrada.`);
+        logger.warn(`[Worker][${requestId}] Cola de lotes llena (${batchQueue.length}). Pausando readline y stream de entrada.`);
+        rl.pause();
         parentPort.postMessage({ type: 'PAUSE_STREAM' });
       }
     }
