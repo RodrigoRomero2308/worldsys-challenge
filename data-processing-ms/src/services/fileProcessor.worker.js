@@ -10,7 +10,8 @@ const { requestId, filename } = workerData;
 logger.info(`[Worker][${requestId}] Iniciado y listo para procesar stream.`);
 
 const EXPECTED_COLUMNS = 10;
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = process.env.DB_BATCH_SIZE || 1000;
+const DB_MAX_QUEUE_SIZE = process.env.DB_MAX_QUEUE_SIZE || 5;
 
 let totalLinesStreamed = 0; // Renombrado desde lineNumber para claridad
 let validLinesCount = 0;    // Renombrado desde processedLinesCount
@@ -142,11 +143,20 @@ async function processBatchQueue() {
   if (isDbWriting || batchQueue.length === 0) return;
   isDbWriting = true;
 
+  const wasQueueFull = batchQueue.length >= DB_MAX_QUEUE_SIZE;
+
   const currentBatch = batchQueue.shift();
-  logger.debug(`[Worker][${requestId}] Procesando lote de ${currentBatch.length} registros.`);
+  logger.debug(`[Worker][${requestId}] Procesando lote de ${currentBatch.length} registros. Cola restante: ${batchQueue.length}`);
   await insertBatch(currentBatch);
 
+  // Si la cola estaba llena y ahora tiene espacio, avisamos para reanudar el stream
+  if (wasQueueFull && batchQueue.length < DB_MAX_QUEUE_SIZE) {
+    logger.info(`[Worker][${requestId}] Cola de lotes con espacio (${batchQueue.length}). Reanudando stream.`);
+    parentPort.postMessage({ type: 'RESUME_STREAM' });
+  }
+
   isDbWriting = false;
+  // Comprobar si hay más lotes o si el stream ha terminado
   if (batchQueue.length > 0) {
     process.nextTick(processBatchQueue);
   } else if (streamFinished) {
@@ -239,9 +249,15 @@ rl.on('line', (line) => {
 
     if (batch.length >= BATCH_SIZE) {
       logger.debug(`[Worker][${requestId}] Lote de ${batch.length} registros listo, añadiendo a la cola.`);
-      batchQueue.push([...batch]);
+      batchQueue.push(batch);
       batch = [];
       process.nextTick(processBatchQueue);
+
+      // Si la cola de lotes está llena, pausar el stream de entrada
+      if (batchQueue.length >= DB_MAX_QUEUE_SIZE) {
+        logger.warn(`[Worker][${requestId}] Cola de lotes llena (${batchQueue.length}). Pausando stream de entrada.`);
+        parentPort.postMessage({ type: 'PAUSE_STREAM' });
+      }
     }
   } catch (error) {
     errorLinesCount++;

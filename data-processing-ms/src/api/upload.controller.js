@@ -124,6 +124,12 @@ const uploadFile = (req, res) => {
         );
         currentStatus.status = 'processing';
         currentStatus.progress = message.data; // La nueva estructura anidada se guarda directamente
+      } else if (message.type === 'PAUSE_STREAM') {
+        logger.warn(`[Controller][${requestId}] Pausando el stream de entrada (back-pressure).`);
+        req.pause();
+      } else if (message.type === 'RESUME_STREAM') {
+        logger.info(`[Controller][${requestId}] Reanudando el stream de entrada.`);
+        req.resume();
       }
     });
 
