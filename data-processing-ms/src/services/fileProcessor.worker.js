@@ -1,11 +1,11 @@
 const { parentPort, workerData } = require('worker_threads');
 const readline = require('readline');
-const { Readable } = require('stream');
+const fs = require('fs');
 const sql = require('mssql');
 const dbConfig = require('../config/db.config');
 const logger = require('../utils/logger');
 
-const { requestId, filename } = workerData;
+const { requestId, filename, tempFilePath } = workerData;
 
 logger.info(`[Worker][${requestId}] Iniciado y listo para procesar stream.`);
 
@@ -27,7 +27,6 @@ let lastDbError = null;
 let isDbWriting = false;
 let streamFinished = false;
 let batchQueue = [];
-let isControllerWaiting = false;
 
 let pool;
 
@@ -150,18 +149,9 @@ async function processBatchQueue() {
 
   const isQueueNowReady = batchQueue.length < DB_MAX_QUEUE_SIZE;
 
-  // 1. Reanudar el procesamiento interno (readline) si estaba pausado y ahora hay espacio.
   if (wasQueueFull && isQueueNowReady) {
     logger.info(`[Worker][${requestId}] Cola de lotes con espacio. Reanudando readline.`);
     rl.resume();
-  }
-
-  // 2. Si el controlador estaba esperando porque la cola estaba llena, ahora que hay espacio,
-  // le pedimos el siguiente chunk.
-  if (isControllerWaiting && isQueueNowReady) {
-    logger.info(`[Worker][${requestId}] Inserción en BD liberó la cola. Pidiendo siguiente chunk.`);
-    parentPort.postMessage({ type: 'CHUNK_RECEIVED' });
-    isControllerWaiting = false;
   }
 
   isDbWriting = false;
@@ -176,6 +166,14 @@ async function processBatchQueue() {
 function finishProcessing() {
   logger.info(`[Worker][${requestId}] Fin del procesamiento.`);
   if (pool) pool.close();
+
+  try {
+    logger.info(`[Worker][${requestId}] Eliminando archivo temporal: ${tempFilePath}`);
+    fs.unlinkSync(tempFilePath);
+  } catch (err) {
+    logger.error(`[Worker][${requestId}] Error al eliminar el archivo temporal ${tempFilePath}:`, err);
+  }
+
   parentPort.postMessage({
       status: 'completed',
       summary: {
@@ -235,9 +233,14 @@ function validateAndMapRecord(recordArray) {
   return { ID_Cliente: id, Nombre: nombre, Apellido: apellido, Email: email, FechaNacimiento: fechaNacimiento, DireccionCompleta: direccion, Ciudad: ciudad, Pais: pais, Telefono: telefono, FechaRegistro: fechaRegistro };
 }
 
-const inputStream = new Readable({
-  read() {}
-});
+if (!fs.existsSync(tempFilePath)) {
+  logger.error(`[Worker][${requestId}] El archivo temporal no existe en la ruta: ${tempFilePath}`);
+  parentPort.postMessage({ status: 'failed', summary: { error: 'Temporary file not found.' } });
+  parentPort.close();
+  return;
+}
+
+const inputStream = fs.createReadStream(tempFilePath);
 
 const rl = readline.createInterface({
   input: inputStream,
@@ -293,27 +296,4 @@ rl.on('close', () => {
   }
 });
 
-parentPort.on('message', (message) => {
-  if (message.type === 'PROCESS_CHUNK') {
-    inputStream.push(message.data);
-
-    logger.debug(`[Worker][${requestId}] Chunk recibido. BatchQueue: ${batchQueue.length}.`);
-    // Lógica de contrapresión y anti-deadlock:
-    // Si la cola de lotes para la BD tiene espacio, pedimos el siguiente chunk inmediatamente.
-    if (batchQueue.length <= DB_MAX_QUEUE_SIZE) {
-      logger.debug(`[Worker][${requestId}] Cola con espacio. Pidiendo siguiente chunk inmediatamente.`);
-      parentPort.postMessage({ type: 'CHUNK_RECEIVED' });
-    } else {
-      // Si la cola está llena, no pedimos más datos. Anotamos que el controlador
-      // está en pausa, esperando señal. La señal se enviará desde
-      // processBatchQueue cuando se libere espacio.
-      logger.warn(`[Worker][${requestId}] Cola llena. Controlador puesto en espera.`);
-      isControllerWaiting = true;
-    }
-  } else if (message.type === 'STREAM_END') {
-    inputStream.push(null);
-    logger.info(`[Worker][${requestId}] Señal de STREAM_END recibida, inputStream finalizado.`);
-  }
-});
-
-parentPort.postMessage({ status: 'ready' });
+parentPort.postMessage({ status: 'processing_started' });
