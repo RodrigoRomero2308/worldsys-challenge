@@ -10,24 +10,24 @@ const { requestId, filename } = workerData;
 logger.info(`[Worker][${requestId}] Iniciado y listo para procesar stream.`);
 
 const EXPECTED_COLUMNS = 10;
-const BATCH_SIZE = process.env.DB_BATCH_SIZE || 1000;
-const DB_MAX_QUEUE_SIZE = process.env.DB_MAX_QUEUE_SIZE || 5;
+const BATCH_SIZE = Number.isFinite(Number(process.env.DB_BATCH_SIZE)) ? Number(process.env.DB_BATCH_SIZE) : 1000;
+const DB_MAX_QUEUE_SIZE = Number.isFinite(Number(process.env.DB_MAX_QUEUE_SIZE)) ? Number(process.env.DB_MAX_QUEUE_SIZE) : 5;
 
-let totalLinesStreamed = 0; // Renombrado desde lineNumber para claridad
-let validLinesCount = 0;    // Renombrado desde processedLinesCount
-let errorLinesCount = 0;    // Mantenido
+let totalLinesStreamed = 0;
+let validLinesCount = 0;
+let errorLinesCount = 0;
 let batch = [];
 
-// Contadores para la BD
 let rowsSentToDb = 0;
 let rowsSuccessfullyInserted = 0;
-let batchesSentToDb = 0; // Ya existía como batchesSentCount, ahora es parte del objeto 'database'
+let batchesSentToDb = 0;
 let batchesFailedInDb = 0;
 let lastDbError = null;
 
 let isDbWriting = false;
 let streamFinished = false;
 let batchQueue = [];
+let isControllerWaiting = false;
 
 let pool;
 
@@ -64,7 +64,7 @@ async function insertBatch(records) {
     
     batchesSentToDb++;
     rowsSuccessfullyInserted += result.rowsAffected;
-    rowsSentToDb += records.length; // Asumimos que todos los 'records' se intentaron enviar
+    rowsSentToDb += records.length;
 
     logger.info(`[Worker][${requestId}] Lote de ${records.length} registros insertado. Filas afectadas: ${result.rowsAffected}. Total lotes BD: ${batchesSentToDb}`);
     
@@ -102,7 +102,7 @@ async function insertBatch(records) {
     logger.error(`[Worker][${requestId}] Error durante la inserción masiva del lote de ${records.length} registros:`, { message: err.message, code: err.code });
     batchesFailedInDb++;
     lastDbError = err.message;
-    rowsSentToDb += records.length; // Se intentaron enviar estas filas
+    rowsSentToDb += records.length;
 
     parentPort.postMessage({ 
       type: 'DB_INSERT_ERROR', 
@@ -115,7 +115,6 @@ async function insertBatch(records) {
       } 
     });
 
-    // Re-enviar progreso con el error actualizado
     parentPort.postMessage({
       type: 'PROGRESS_UPDATE',
       data: {
@@ -149,15 +148,24 @@ async function processBatchQueue() {
   logger.debug(`[Worker][${requestId}] Procesando lote de ${currentBatch.length} registros. Cola restante: ${batchQueue.length}`);
   await insertBatch(currentBatch);
 
-  // Si la cola estaba llena y ahora tiene espacio, reanudamos readline y el stream
-  if (wasQueueFull && batchQueue.length < DB_MAX_QUEUE_SIZE) {
-    logger.info(`[Worker][${requestId}] Cola de lotes con espacio (${batchQueue.length}). Reanudando readline y stream.`);
+  const isQueueNowReady = batchQueue.length < DB_MAX_QUEUE_SIZE;
+
+  // 1. Reanudar el procesamiento interno (readline) si estaba pausado y ahora hay espacio.
+  if (wasQueueFull && isQueueNowReady) {
+    logger.info(`[Worker][${requestId}] Cola de lotes con espacio. Reanudando readline.`);
     rl.resume();
-    parentPort.postMessage({ type: 'RESUME_STREAM' });
+  }
+
+  // 2. Si el controlador estaba esperando porque la cola estaba llena, ahora que hay espacio,
+  // le pedimos el siguiente chunk.
+  if (isControllerWaiting && isQueueNowReady) {
+    logger.info(`[Worker][${requestId}] Inserción en BD liberó la cola. Pidiendo siguiente chunk.`);
+    parentPort.postMessage({ type: 'CHUNK_RECEIVED' });
+    isControllerWaiting = false;
   }
 
   isDbWriting = false;
-  // Comprobar si hay más lotes o si el stream ha terminado
+
   if (batchQueue.length > 0) {
     process.nextTick(processBatchQueue);
   } else if (streamFinished) {
@@ -239,7 +247,7 @@ const rl = readline.createInterface({
 rl.on('line', (line) => {
   totalLinesStreamed++;
   if (line.trim() === '') {
-    logger.debug(`[Worker][${requestId}] Línea ${lineNumber} vacía, omitiendo.`);
+    logger.debug(`[Worker][${requestId}] Línea vacía, omitiendo.`);
     return;
   }
   try {
@@ -250,15 +258,13 @@ rl.on('line', (line) => {
 
     if (batch.length >= BATCH_SIZE) {
       logger.debug(`[Worker][${requestId}] Lote de ${batch.length} registros listo, añadiendo a la cola.`);
-      batchQueue.push([...batch]); // Corregido: crear una copia del lote
+      batchQueue.push([...batch]);
       batch = [];
       process.nextTick(processBatchQueue);
 
-      // Si la cola de lotes está llena, pausar readline y el stream de entrada
       if (batchQueue.length >= DB_MAX_QUEUE_SIZE) {
-        logger.warn(`[Worker][${requestId}] Cola de lotes llena (${batchQueue.length}). Pausando readline y stream de entrada.`);
+        logger.warn(`[Worker][${requestId}] Cola de lotes llena (${batchQueue.length}). Pausando readline.`);
         rl.pause();
-        parentPort.postMessage({ type: 'PAUSE_STREAM' });
       }
     }
   } catch (error) {
@@ -290,6 +296,20 @@ rl.on('close', () => {
 parentPort.on('message', (message) => {
   if (message.type === 'PROCESS_CHUNK') {
     inputStream.push(message.data);
+
+    logger.debug(`[Worker][${requestId}] Chunk recibido. BatchQueue: ${batchQueue.length}.`);
+    // Lógica de contrapresión y anti-deadlock:
+    // Si la cola de lotes para la BD tiene espacio, pedimos el siguiente chunk inmediatamente.
+    if (batchQueue.length <= DB_MAX_QUEUE_SIZE) {
+      logger.debug(`[Worker][${requestId}] Cola con espacio. Pidiendo siguiente chunk inmediatamente.`);
+      parentPort.postMessage({ type: 'CHUNK_RECEIVED' });
+    } else {
+      // Si la cola está llena, no pedimos más datos. Anotamos que el controlador
+      // está en pausa, esperando señal. La señal se enviará desde
+      // processBatchQueue cuando se libere espacio.
+      logger.warn(`[Worker][${requestId}] Cola llena. Controlador puesto en espera.`);
+      isControllerWaiting = true;
+    }
   } else if (message.type === 'STREAM_END') {
     inputStream.push(null);
     logger.info(`[Worker][${requestId}] Señal de STREAM_END recibida, inputStream finalizado.`);

@@ -70,7 +70,7 @@ const uploadFile = (req, res) => {
           `[Controller][${requestId}] Worker ha completado el procesamiento. Resumen:`, message.summary
         );
         currentStatus.status = 'completed';
-        currentStatus.progress = message.summary; // Guardamos el resumen final en el campo progress
+        currentStatus.progress = message.summary;
         currentStatus.endTime = new Date().toISOString();
         setTimeout(() => clearStatusEntry(requestId), STATUS_TTL_MS);
       } else if (message.status === 'ready') {
@@ -79,10 +79,12 @@ const uploadFile = (req, res) => {
           `[Controller][${requestId}] Worker listo. Enviando datos del stream...`
         );
         fileStream.on('data', (chunk) => {
+          logger.debug(`[Controller][${requestId}] Chunk recibido. Pausando stream y enviando a worker.`);
           worker.postMessage({
             type: 'PROCESS_CHUNK',
             data: chunk.toString('utf-8'),
           });
+          fileStream.pause();
         });
 
         fileStream.on('end', () => {
@@ -120,16 +122,13 @@ const uploadFile = (req, res) => {
       } else if (message.type === 'PROGRESS_UPDATE') {
         logger.info(
           `[Controller][${requestId}] Progreso del worker para ${filename}:`,
-          message.data // message.data ahora contiene la estructura anidada { processing: {...}, database: {...} }
+          message.data
         );
         currentStatus.status = 'processing';
-        currentStatus.progress = message.data; // La nueva estructura anidada se guarda directamente
-      } else if (message.type === 'PAUSE_STREAM') {
-        logger.warn(`[Controller][${requestId}] Pausando el stream de entrada (back-pressure).`);
-        req.pause();
-      } else if (message.type === 'RESUME_STREAM') {
-        logger.info(`[Controller][${requestId}] Reanudando el stream de entrada.`);
-        req.resume();
+        currentStatus.progress = message.data;
+      } else if (message.type === 'CHUNK_RECEIVED') {
+        logger.debug(`[Controller][${requestId}] ACK de chunk recibido. Reanudando stream.`);
+        fileStream.resume();
       }
     });
 
