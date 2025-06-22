@@ -15,6 +15,7 @@ spec:
       labels:
         app: data-processing-ms
     spec:
+      restartPolicy: Always
       containers:
       - name: data-processing-ms-container
         image: worldsys-data-processing-ms:latest
@@ -26,6 +27,9 @@ spec:
             name: data-processing-ms-config
         - secretRef:
             name: data-processing-ms-secret
+        volumeMounts:
+        - name: uploads-storage
+          mountPath: /usr/src/app/uploads
         resources:
           requests:
             memory: "128Mi"
@@ -49,3 +53,7 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
+      volumes:
+      - name: uploads-storage
+        persistentVolumeClaim:
+          claimName: data-uploads-pvc

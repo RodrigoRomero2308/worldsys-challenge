@@ -29,7 +29,7 @@ El microservicio expone una API REST para la carga de archivos, la consulta del 
 
 - **Node.js y Express**: Se eligió Node.js por su modelo de I/O no bloqueante, ideal para aplicaciones de red y streaming. Express proporciona un framework minimalista y robusto para la API.
 - **Worker Threads**: Para evitar bloquear el hilo principal durante el procesamiento intensivo del archivo, se delega toda la lógica de parsing e inserción a un hilo de trabajo separado. Esto asegura que el endpoint `/health` y otras llamadas a la API siempre respondan.
-- **Streaming con `busboy`**: En lugar de cargar el archivo completo en memoria, se procesa como un stream. `busboy` es una librería eficiente para parsear `multipart/form-data` directamente desde el stream de la petición.
+- **Patrón Claim-Check (Guardado y Procesamiento Asíncrono)**: Para mejorar la resiliencia y la experiencia del cliente, el servicio implementa el patrón *Claim-Check*. Al recibir un archivo, el controlador lo guarda inmediatamente en un volumen de disco temporal y responde con un `202 Accepted`. Luego, un `worker thread` se encarga de procesar el archivo desde el disco de forma asíncrona. Esto desacopla completamente la subida del procesamiento, liberando al cliente de inmediato.
 - **Inserciones Masivas (Bulk Inserts)**: Para maximizar el rendimiento de la base de datos, los registros validados se agrupan en lotes y se envían a SQL Server mediante una única operación de `bulk insert`, reduciendo drásticamente la sobrecarga de la red y las transacciones.
 - **Docker y Kubernetes (K8s)**: La contenerización asegura un entorno de ejecución consistente. Kubernetes fue elegido para la orquestación por su robustez, escalabilidad y estándar en la industria. Se utiliza `kind` para el desarrollo local en un entorno similar a producción.
 - **Logging Centralizado con `Winston`**: Se utiliza Winston para un logging estructurado y configurable, con un `requestId` para correlacionar todos los logs pertenecientes a una misma petición.
@@ -40,7 +40,7 @@ El microservicio expone una API REST para la carga de archivos, la consulta del 
 
 - Node.js (v18+)
 - pnpm (o npm/yarn)
-- Docker y Docker Compose
+- Docker
 - `kubectl` y `kind` para despliegue en Kubernetes local.
 
 ### Variables de Entorno
@@ -169,7 +169,7 @@ Se ha propuesto una estrategia de escalabilidad con dos enfoques:
 
 ## 7. Pruebas y Validación
 
-Sigue estos pasos para realizar una prueba completa del sistema de principio a fin.
+Sigue estos pasos para realizar una prueba completa del sistema de principio a fin, ejecutando los componentes localmente.
 
 ### Paso 1: Generar Datos de Prueba
 
@@ -182,33 +182,42 @@ Sigue estos pasos para realizar una prueba completa del sistema de principio a f
     node generate-data.js --lines 10000 --error-rate 0.05
     ```
 
-Se creará un archivo `clientes.dat` en el directorio `data-generator` con aproximadamente 9,500 líneas válidas y 500 líneas con errores de formato.
+Se creará un archivo `clientes.dat` en el directorio `data-generator`.
 
 ### Paso 2: Iniciar el Entorno
 
-1.  Desde la raíz del proyecto, levanta el microservicio y la base de datos usando Docker Compose:
+1.  **Iniciar la Base de Datos**: Abre una terminal y ejecuta el contenedor de SQL Server usando Docker. Utiliza el comando correspondiente a tu arquitectura (ARM64 o x86_64) que se encuentra en la sección "Base de Datos" de este README.
     ```bash
-    docker-compose up --build
+    # Ejemplo para ARM64 (Azure SQL Edge)
+    docker run --cap-add SYS_PTRACE -e 'ACCEPT_EULA=1' -e 'MSSQL_SA_PASSWORD=YourStrong@Password' \
+    -p 1433:1433 --name azuresqledge -d \
+    mcr.microsoft.com/azure-sql-edge
     ```
 
-Los contenedores del servicio (`data-processing-ms`) y la base de datos (`sql-server`) se inician. Deberías ver los logs del servicio indicando que está escuchando en el puerto 3000.
+2.  **Iniciar el Microservicio**:
+    - Navega al directorio del microservicio: `cd data-processing-ms`
+    - Instala las dependencias: `pnpm install`
+    - Asegúrate de que tu archivo `.env` esté configurado para conectar con la base de datos en `localhost`.
+    - Inicia el servicio en modo desarrollo: `pnpm run dev`
+
+El servicio comenzará a escuchar en el puerto 3000 (o el que hayas configurado en `.env`).
 
 ### Paso 3: Subir el Archivo y Obtener el Request ID
 
 1.  Abre una segunda terminal.
 2.  Usa `curl` para subir el archivo generado. Este comando asume que estás en la raíz del proyecto:
     ```bash
-    # El puerto es 3000 porque docker-compose expone ese puerto
     curl -X POST -F "file=@./data-generator/clientes.dat" http://localhost:3000/api/v1/clients/upload
     ```
 
-Recibirás una respuesta JSON con el `requestId` del proceso de carga. Cópialo.
-```json
-{
-  "message": "El archivo se está procesando. Usa el siguiente ID para rastrear el progreso.",
-  "requestId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-}
-```
+3.  Recibirás una respuesta `202 Accepted` con el `requestId` del proceso de carga. Cópialo.
+    ```json
+    {
+      "message": "El archivo ha sido recibido y su procesamiento ha comenzado.",
+      "requestId": "a1b2c3d4e5f6a7b8",
+      "statusEndpoint": "/api/v1/clients/status/a1b2c3d4e5f6a7b8"
+    }
+    ```
 
 ### Paso 4: Monitorear el Proceso
 
@@ -223,21 +232,22 @@ Recibirás una respuesta JSON con el `requestId` del proceso de carga. Cópialo.
     ```
 4.  Cuando se te solicite, pega el `requestId` que copiaste en el paso anterior.
 
-Al finalizar, imprimirá el estado final (`completed`), generará un archivo `report.html` y se detendrá.
+El script mostrará el progreso en tiempo real y, al finalizar, generará un archivo `report.html`.
 
 ### Paso 5: Verificar los Resultados
 
 1.  **Revisar el Reporte**: Abre el archivo `metrics-monitor/report.html` en un navegador. Verifica que las estadísticas finales coincidan con lo esperado (aprox. 9,500 líneas válidas y 500 con error).
 
-2.  **Consultar la Base de Datos**: Conéctate a la base de datos SQL Server (puedes usar Azure Data Studio o `sqlcmd` dentro del contenedor de Docker) y verifica el número de filas insertadas.
+2.  **Consultar la Base de Datos**: Conéctate a la base de datos SQL Server y verifica el número de filas insertadas.
     ```bash
-    # Comando para entrar a sqlcmd en el contenedor (reemplaza 'sql-server' si tu contenedor se llama diferente)
-    docker exec -it sql-server /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'YourStrong@Password'
+    # Reemplaza 'azuresqledge' por el nombre de tu contenedor si es diferente
+    docker exec -it azuresqledge /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'YourStrong@Password'
     ```
     Una vez dentro de `sqlcmd`:
     ```sql
     USE ChallengeDB;
     GO
-    SELECT COUNT(*) FROM Clientes;
+    SELECT COUNT(*) FROM [dbo].[Clients];
     GO
     ```
+El resultado debería coincidir con el número de `validLinesCount` del reporte.
