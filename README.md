@@ -251,3 +251,9 @@ El script mostrará el progreso en tiempo real y, al finalizar, generará un arc
     GO
     ```
 El resultado debería coincidir con el número de `validLinesCount` del reporte.
+
+## 8. Resultados de Pruebas de Carga
+
+Como demostración del rendimiento y la estabilidad del sistema bajo carga, se incluye un reporte generado tras procesar un archivo de 4GB.
+
+- [Ver Reporte de Ejemplo (4GB)](./ejemploReporte4GB.html)
