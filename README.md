@@ -257,3 +257,13 @@ El resultado debería coincidir con el número de `validLinesCount` del reporte.
 Como demostración del rendimiento y la estabilidad del sistema bajo carga, se incluye un reporte generado tras procesar un archivo de 4GB.
 
 - [Ver Reporte de Ejemplo (4GB)](./ejemploReporte4GB.html)
+
+## 9. Cosas que se podrían hacer distinto en produccion
+
+- Implementar un sistema de logging centralizado aprovechando el uso de `winston`. Podria ser con Grafana, Prometheus u otros sistemas.
+- Implementar una Dead Letter Queue para manejar los archivos corruptos o con formato incorrecto ademas de los fallos en insercion de datos en la base de datos.
+- Gestion del estado de las requests de forma persistente. Podria ser con una base de datos especializada como `Redis` o `MongoDB`.
+- Implementar un mecanismo de reanudacion de procesamiento de archivos en caso de fallo.
+- Agregar autenticacion y autorizacion para el acceso a la API.
+- Implementar autoescalado en base a metricas del servicio como el cpu. (Planteado en la seccion 6. Estrategia de Escalabilidad)
+- Modificar la gestion de secretos con algun servicio especializado como `AWS Secrets Manager`.
